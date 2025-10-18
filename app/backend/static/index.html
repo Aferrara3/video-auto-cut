@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoCut Studio</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>🎬 AutoCut Studio</header>
+
+  <main>
+    <!-- LOGIN -->
+    <section id="login-section">
+      <h3>Login</h3>
+      <input type="text" id="username" placeholder="Enter username" />
+      <button id="login-btn">Continue</button>
+    </section>
+
+    <!-- UPLOAD -->
+    <section id="upload-section" class="hidden">
+      <h3>Upload Video</h3>
+      <input type="file" id="video-file" accept="video/mp4" />
+      <button id="upload-btn">Upload & Process ▶</button>
+      <p id="upload-status"></p>
+    </section>
+
+    <!-- RESULTS -->
+    <section id="results-section" class="hidden">
+      <h3>Results</h3>
+      <div id="results-content">
+        <p><strong>Detected Segments:</strong></p>
+        <div class="segments" id="segments-list">Waiting...</div>
+        <div style="margin-top:1rem;">
+          <button id="download-srt">💾 Download SRT</button>
+          <button id="download-video">🎞️ Download Final Video</button>
+        </div>
+        <video id="preview" width="100%" controls class="hidden" style="margin-top:1rem;"></video>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const loginBtn = document.getElementById('login-btn');
+    const uploadBtn = document.getElementById('upload-btn');
+    const usernameInput = document.getElementById('username');
+    const videoFileInput = document.getElementById('video-file');
+    const uploadStatus = document.getElementById('upload-status');
+    const segmentsList = document.getElementById('segments-list');
+    const resultsSection = document.getElementById('results-section');
+    const preview = document.getElementById('preview');
+    const downloadSrt = document.getElementById('download-srt');
+    const downloadVideo = document.getElementById('download-video');
+
+    let sessionToken = null;
+    let jobId = null;
+
+    loginBtn.onclick = async () => {
+      const username = usernameInput.value.trim();
+      if (!username) return alert('Enter a username');
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username })
+      });
+      const data = await res.json();
+      sessionToken = data.session;
+      document.getElementById('login-section').classList.add('hidden');
+      document.getElementById('upload-section').classList.remove('hidden');
+    };
+
+    uploadBtn.onclick = async () => {
+      const file = videoFileInput.files[0];
+      if (!file) return alert('Choose a video file first!');
+      uploadStatus.textContent = 'Uploading...';
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('session', sessionToken);
+
+      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      jobId = data.job_id;
+      uploadStatus.textContent = 'Processing... this may take a few minutes';
+      pollResults();
+    };
+
+    async function pollResults() {
+      const interval = setInterval(async () => {
+        const res = await fetch(`/api/results/${jobId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.status === 'done') {
+          clearInterval(interval);
+          renderResults(data);
+        }
+      }, 3000);
+    }
+
+    function renderResults(data) {
+      document.getElementById('upload-section').classList.add('hidden');
+      resultsSection.classList.remove('hidden');
+      segmentsList.innerHTML = '';
+      data.segments.forEach(seg => {
+        const div = document.createElement('div');
+        div.textContent = `[${seg.start} - ${seg.end}] ${seg.text}`;
+        div.classList.add('highlight');
+        segmentsList.appendChild(div);
+      });
+      preview.src = data.final_video_url;
+      preview.classList.remove('hidden');
+      downloadSrt.onclick = () => window.open(data.srt_url, '_blank');
+      downloadVideo.onclick = () => window.open(data.final_video_url, '_blank');
+    }
+  </script>
+</body>
+</html>

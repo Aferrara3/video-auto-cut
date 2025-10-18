@@ -1,0 +1,27 @@
+[project]
+name = "video-auto-cut"
+version = "0.1.0"
+description = ""
+packages = [{ include = "video_auto_cut" }]
+authors = [
+    {name = "Your Name",email = "you@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "openai-whisper (==20240930)",
+    "pyannote-audio (>=3.3.2,<4.0)",
+    "python-dotenv (>=1.1.1,<2.0.0)",
+    "whisperx @ git+https://github.com/m-bain/whisperX.git@main",
+    "openai (>=2.5.0,<3.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ipywidgets (>=8.1.7,<9.0.0)"
+]
