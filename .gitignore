@@ -5,3 +5,7 @@ app/backend/uploads/
 .venv/
 __pycache__/
 *.pyc
+.vscode/
+*.mp4
+uploads/
+artifacts/
