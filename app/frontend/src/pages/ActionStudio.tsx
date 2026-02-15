@@ -14,10 +14,12 @@ import Paper from '@mui/material/Paper';
 import Chip from '@mui/material/Chip';
 import Divider from '@mui/material/Divider';
 import Stack from '@mui/material/Stack';
+import IconButton from '@mui/material/IconButton';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import MovieCreationIcon from '@mui/icons-material/MovieCreation';
 import DownloadIcon from '@mui/icons-material/Download';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { action as actionApi } from '../api/client';
 
 const steps = ['Upload Video', 'Analyze Content', 'Select Highlights', 'Render Video'];
@@ -72,11 +74,18 @@ export default function ActionStudio() {
     });
   }, []);
 
-  const hydrateFromStatus = React.useCallback((data: any, restoredJobId?: string) => {
-    const nextJobId = restoredJobId || jobId;
-    if (nextJobId) setJobId(nextJobId);
+  const removeJob = React.useCallback((id: string) => {
+    setJobHistory((prev) => {
+      const next = prev.filter((j) => j.id !== id);
+      localStorage.setItem(JOBS_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const hydrateFromStatus = React.useCallback((data: any, targetJobId: string) => {
+    setJobId(targetJobId);
     setStatus(data.status || 'idle');
-    if (nextJobId) upsertJob(nextJobId, data.status || 'idle', data.error);
+    upsertJob(targetJobId, data.status || 'idle', data.error);
     if (data.status === 'ingesting') setActiveStep(1);
     if (data.status === 'ingested' || data.status === 'planning' || data.status === 'planned') setActiveStep(2);
     if (data.status === 'rendering' || data.status === 'done') setActiveStep(3);
@@ -84,7 +93,7 @@ export default function ActionStudio() {
     if (data.plan) setPlan(data.plan);
     if (data.final_video_url) setFinalVideoUrl(data.final_video_url);
     if (data.error) setError(data.error);
-  }, [jobId, upsertJob]);
+  }, [upsertJob]);
 
   React.useEffect(() => {
     const savedJobId = localStorage.getItem('action_job_id');
@@ -92,9 +101,14 @@ export default function ActionStudio() {
     actionApi.getStatus(savedJobId).then((data) => {
       if (data?.status && data.status !== 'not_found') {
         hydrateFromStatus(data, savedJobId);
+      } else {
+        localStorage.removeItem('action_job_id');
+        removeJob(savedJobId);
       }
     }).catch(() => {});
-  }, [hydrateFromStatus]);
+    // intentionally run once on initial mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrateFromStatus, removeJob]);
 
   React.useEffect(() => {
     const activeJobs = jobHistory.filter((j) => ['ingesting', 'planning', 'rendering'].includes(j.status));
@@ -103,30 +117,38 @@ export default function ActionStudio() {
       for (const job of activeJobs) {
         try {
           const data = await actionApi.getStatus(job.id);
-          if (data?.status && data.status !== 'not_found') {
+          if (data?.status === 'not_found') {
+            removeJob(job.id);
+          } else if (data?.status) {
             upsertJob(job.id, data.status, data.error);
           }
         } catch {}
       }
     }, 5000);
     return () => clearInterval(id);
-  }, [jobHistory, upsertJob]);
+  }, [jobHistory, upsertJob, removeJob]);
 
   React.useEffect(() => {
     if (!jobId || !['ingesting', 'planning', 'rendering'].includes(status)) return;
 
     const id = setInterval(async () => {
-      try {
-        const data = await actionApi.getStatus(jobId);
-        hydrateFromStatus(data);
-      } catch {
-        setError('Polling failed');
-        setStatus('failed');
+        try {
+          const data = await actionApi.getStatus(jobId);
+          if (data?.status === 'not_found') {
+            removeJob(jobId);
+            handleStartNewJob();
+            setError('This job expired after backend restart. Start a new job.');
+            return;
+          }
+          hydrateFromStatus(data, jobId);
+        } catch {
+          setError('Polling failed');
+          setStatus('failed');
       }
     }, 2000);
 
     return () => clearInterval(id);
-  }, [jobId, status, activeStep, plan.length, hydrateFromStatus]);
+  }, [jobId, status, hydrateFromStatus]);
 
   React.useEffect(() => {
     if (jobId) localStorage.setItem('action_job_id', jobId);
@@ -154,12 +176,15 @@ export default function ActionStudio() {
     if (!jobId) return;
     try {
       setStatus('planning');
+      upsertJob(jobId, 'planning');
       const data = await actionApi.plan(jobId);
       setPlan(data.plan || []);
       setStatus('planned');
+      upsertJob(jobId, 'planned');
     } catch (e: any) {
       setError(e?.message || 'Plan failed');
       setStatus('failed');
+      upsertJob(jobId, 'failed', e?.message || 'Plan failed');
     }
   };
 
@@ -167,7 +192,9 @@ export default function ActionStudio() {
     try {
       const data = await actionApi.getStatus(targetJobId);
       if (data?.status === 'not_found') {
-        setError('Job not found');
+        removeJob(targetJobId);
+        if (jobId === targetJobId) handleStartNewJob();
+        setError('That job is no longer available (backend likely restarted).');
         return;
       }
       setError(null);
@@ -181,11 +208,31 @@ export default function ActionStudio() {
     if (!jobId || plan.length === 0) return;
     try {
       setStatus('rendering');
+      upsertJob(jobId, 'rendering');
       setActiveStep(3);
       await actionApi.render(jobId, plan);
     } catch (e: any) {
       setError(e?.message || 'Render failed');
       setStatus('failed');
+      upsertJob(jobId, 'failed', e?.message || 'Render failed');
+    }
+  };
+
+  const handleStartNewJob = () => {
+    setJobId(null);
+    setStatus('idle');
+    setActiveStep(0);
+    setSegments([]);
+    setPlan([]);
+    setFinalVideoUrl(null);
+    setError(null);
+    localStorage.removeItem('action_job_id');
+  };
+
+  const handleDeleteJob = (targetJobId: string) => {
+    removeJob(targetJobId);
+    if (jobId === targetJobId) {
+      handleStartNewJob();
     }
   };
 
@@ -205,10 +252,13 @@ export default function ActionStudio() {
   return (
     <Box sx={{ width: '100%', maxWidth: 1400, margin: '0 auto', display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 320px' }, gap: 3 }}>
       <Box>
-      <Typography variant="h4" sx={{ mb: 4, display: 'flex', alignItems: 'center', gap: 2 }}>
-        <AutoFixHighIcon fontSize="large" color="primary" />
-        Action Studio
-      </Typography>
+      <Box sx={{ mb: 4, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2 }}>
+        <Typography variant="h4" sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <AutoFixHighIcon fontSize="large" color="primary" />
+          Action Studio
+        </Typography>
+        <Button variant="outlined" onClick={handleStartNewJob}>Start New Job</Button>
+      </Box>
 
       <Stepper activeStep={activeStep} sx={{ mb: 5 }}>
         {steps.map((label) => (
@@ -322,6 +372,7 @@ export default function ActionStudio() {
       <Paper sx={{ p: 2, height: 'fit-content', position: { md: 'sticky' }, top: { md: 88 }, borderRadius: 2 }}>
         <Typography variant="h6" sx={{ mb: 1 }}>Jobs</Typography>
         <Typography variant="caption" color="text.secondary">Resume or monitor action jobs</Typography>
+        <Button fullWidth variant="outlined" sx={{ mt: 1 }} onClick={handleStartNewJob}>New Job</Button>
         <Divider sx={{ my: 1.5 }} />
         <Stack spacing={1}>
           {jobHistory.length === 0 && (
@@ -345,7 +396,18 @@ export default function ActionStudio() {
                 <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
                   {job.id.slice(0, 8)}...{job.id.slice(-4)}
                 </Typography>
-                <Chip size="small" label={job.status} color={statusColor(job.status)} />
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Chip size="small" label={job.status} color={statusColor(job.status)} />
+                  <IconButton
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteJob(job.id);
+                    }}
+                  >
+                    <DeleteOutlineIcon fontSize="inherit" />
+                  </IconButton>
+                </Box>
               </Box>
               <Typography variant="caption" color="text.secondary">
                 {new Date(job.updatedAt).toLocaleTimeString()}

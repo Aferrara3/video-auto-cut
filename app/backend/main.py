@@ -4,6 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uuid, os, shutil, asyncio, subprocess, glob, json
+import sqlite3
+import threading
 from typing import List, Optional
 from app.backend.broll import extraction, description, storage, embedding
 from app.backend.pipeline import transcribe, summarize, video_utils
@@ -40,8 +42,96 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(KEYFRAMES_DIR, exist_ok=True)
 
-# In-memory storage for prototype
-jobs = {}
+JOBS_DB_PATH = os.path.join(OUTPUT_DIR, "jobs.sqlite3")
+_jobs_db_lock = threading.Lock()
+
+
+def _init_jobs_db():
+    with _jobs_db_lock:
+        conn = sqlite3.connect(JOBS_DB_PATH)
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _persist_job_to_db(job_id: str, payload: dict):
+    with _jobs_db_lock:
+        conn = sqlite3.connect(JOBS_DB_PATH)
+        try:
+            conn.execute(
+                """
+                INSERT INTO jobs (id, payload, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    payload=excluded.payload,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (job_id, json.dumps(payload)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _load_jobs_from_db() -> dict:
+    with _jobs_db_lock:
+        conn = sqlite3.connect(JOBS_DB_PATH)
+        try:
+            rows = conn.execute("SELECT id, payload FROM jobs").fetchall()
+        finally:
+            conn.close()
+    loaded = {}
+    for job_id, payload in rows:
+        try:
+            loaded[job_id] = json.loads(payload)
+        except Exception:
+            continue
+    return loaded
+
+
+class JobState(dict):
+    def __init__(self, job_id: str, data: dict, persist_callback):
+        super().__init__(data)
+        self._job_id = job_id
+        self._persist = persist_callback
+
+    def _save(self):
+        self._persist(self._job_id, dict(self))
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._save()
+
+    def update(self, *args, **kwargs):
+        super().update(*args, **kwargs)
+        self._save()
+
+
+class JobsStore(dict):
+    def __init__(self, persist_callback):
+        super().__init__()
+        self._persist = persist_callback
+
+    def __setitem__(self, key, value):
+        state = value if isinstance(value, JobState) else JobState(key, value, self._persist)
+        super().__setitem__(key, state)
+        self._persist(key, dict(state))
+
+
+_init_jobs_db()
+jobs = JobsStore(_persist_job_to_db)
+for _job_id, _payload in _load_jobs_from_db().items():
+    dict.__setitem__(jobs, _job_id, JobState(_job_id, _payload, _persist_job_to_db))
 
 # --- Models ---
 class LoginRequest(BaseModel):
