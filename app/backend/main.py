@@ -7,11 +7,14 @@ import uuid, os, shutil, asyncio, subprocess, glob, json
 from typing import List, Optional
 from app.backend.broll import extraction, description, storage, embedding
 from app.backend.pipeline import transcribe, summarize, video_utils
+from app.backend.action import ingest, identify, assemble
 from app.backend.utils import load_pickle
 import random
+import static_ffmpeg
 
 from dotenv import load_dotenv
 load_dotenv()
+static_ffmpeg.add_paths()
 
 # Check for external dependencies
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
@@ -52,6 +55,9 @@ class PlanRequest(BaseModel):
 
 class RenderRequest(BaseModel):
     clips: List[dict]
+
+class RenderActionRequest(BaseModel):
+    plan: Optional[List[dict]] = None
 
 # --- Auth ---
 @app.post("/api/login")
@@ -348,19 +354,146 @@ async def render_video(job_id: str, request: RenderRequest, background_tasks: Ba
     return {"status": "started"}
 
 
+# --- Action Cut Endpoints ---
+@app.post("/api/action/ingest")
+async def ingest_action(file: UploadFile, background_tasks: BackgroundTasks):
+    """
+    Upload and process an action video (Action Cut Workflow).
+    Extracts keyframes and describes them in background.
+    """
+    job_id = str(uuid.uuid4())
+    upload_path = os.path.join(UPLOAD_DIR, f"{job_id}_{file.filename}")
+    
+    with open(upload_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+        
+    jobs[job_id] = {
+        "type": "action",
+        "status": "ingesting",
+        "video_path": upload_path,
+        "filename": file.filename,
+        "segments": []
+    }
+    
+    def run_ingest():
+        try:
+            print(f"Starting action ingest for {job_id}")
+            # Use KEYFRAMES_DIR/job_id to avoid clutter
+            job_keyframes_dir = os.path.join(KEYFRAMES_DIR, job_id)
+            os.makedirs(job_keyframes_dir, exist_ok=True)
+            
+            # Run the heavy lifting
+            segments = ingest.ingest_action_video(upload_path, job_keyframes_dir)
+            
+            # Update paths for web serving
+            for seg in segments:
+                seg["image_url"] = f"/files/{job_id}/{seg['image_filename']}"
+                
+            jobs[job_id]["segments"] = segments
+            jobs[job_id]["status"] = "ingested"
+            print(f"Action ingest complete for {job_id}: {len(segments)} segments")
+            
+        except Exception as e:
+            print(f"Action ingest failed: {e}")
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = str(e)
+            
+    background_tasks.add_task(run_ingest)
+    
+    return {"job_id": job_id, "status": "ingesting"}
+
+@app.post("/api/action/{job_id}/plan")
+async def plan_action_cut(job_id: str):
+    """
+    Generate an action highlight plan using LLM.
+    """
+    if job_id not in jobs:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+        
+    job = jobs[job_id]
+    if job.get("status") not in ["ingested", "planned"]:
+        return JSONResponse({"error": "Job not ready (must be ingested)"}, status_code=400)
+        
+    try:
+        segments = job["segments"]
+        print(f"Identifying highlights for {len(segments)} segments...")
+        
+        # Call the identification logic
+        selected_segments = identify.identify_action_highlights(segments)
+        
+        job["plan"] = selected_segments
+        job["status"] = "planned"
+        
+        return {"status": "planned", "plan": selected_segments}
+        
+    except Exception as e:
+        print(f"Action planning failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post("/api/action/{job_id}/render")
+async def render_action_cut(job_id: str, request: RenderActionRequest, background_tasks: BackgroundTasks):
+    """
+    Render the final action highlight video.
+    """
+    if job_id not in jobs:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+        
+    job = jobs[job_id]
+    
+    # Update plan if provided
+    if request.plan:
+        job["plan"] = request.plan
+        
+    if "plan" not in job or not job["plan"]:
+        return JSONResponse({"error": "No plan found (must run plan first)"}, status_code=400)
+        
+    job["status"] = "rendering"
+    
+    def run_render():
+        try:
+            print(f"Starting action render for {job_id}")
+            output_filename = os.path.join(OUTPUT_DIR, f"{job_id}_action_highlight.mp4")
+            
+            # Run assembly
+            final_path = assemble.assemble_action_cut(
+                job["video_path"],
+                job["plan"],
+                output_filename
+            )
+            
+            job["final_video_url"] = f"/files/{os.path.basename(final_path)}"
+            job["status"] = "done"
+            print(f"Action render complete: {final_path}")
+            
+        except Exception as e:
+            print(f"Action render failed: {e}")
+            job["status"] = "failed"
+            job["error"] = str(e)
+            
+    background_tasks.add_task(run_render)
+    
+    return {"status": "rendering"}
+
 # --- File Serving ---
-@app.get("/files/{filename}")
-async def get_file(filename: str):
+@app.get("/files/{path:path}")
+async def get_file(path: str):
     # Check in all possible directories
-    possible_paths = [
-        os.path.join(OUTPUT_DIR, filename),
-        os.path.join(UPLOAD_DIR, filename),
-        os.path.join(KEYFRAMES_DIR, filename)
+    # Logic extended to support subdirectories (like job_id/frame.jpg)
+    
+    # Secure path check to prevent traversal
+    if ".." in path:
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+        
+    possible_roots = [
+        OUTPUT_DIR,
+        UPLOAD_DIR,
+        KEYFRAMES_DIR
     ]
     
-    for path in possible_paths:
-        if os.path.exists(path):
-            return FileResponse(path)
+    for root in possible_roots:
+        full_path = os.path.join(root, path)
+        if os.path.exists(full_path) and os.path.isfile(full_path):
+            return FileResponse(full_path)
             
     return JSONResponse({"error": "File not found"}, status_code=404)
 

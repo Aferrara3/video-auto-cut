@@ -5,6 +5,7 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import Layout from './components/Layout';
 import BRollLibrary from './pages/BRollLibrary';
 import StoryStudio from './pages/StoryStudio';
+import ActionStudio from './pages/ActionStudio';
 import { ColorModeContext } from './context/ColorModeContext';
 import './App.css';
 
@@ -59,6 +60,7 @@ function App() {
                 <Route index element={<Navigate to="/broll" replace />} />
                 <Route path="broll" element={<BRollLibrary />} />
                 <Route path="story" element={<StoryStudio />} />
+                <Route path="action" element={<ActionStudio />} />
               </Route>
             </Routes>
           </Router>

@@ -53,4 +53,28 @@ export const jobs = {
   }
 };
 
+export const action = {
+  ingest: async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const { data } = await api.post('/action/ingest', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return data;
+  },
+  plan: async (jobId: string) => {
+    const { data } = await api.post(`/action/${jobId}/plan`);
+    return data;
+  },
+  render: async (jobId: string, plan?: any[]) => {
+    const { data } = await api.post(`/action/${jobId}/render`, { plan });
+    return data;
+  },
+  getStatus: async (jobId: string) => {
+    // Reusing the general jobs status endpoint since action jobs are stored there too
+    const { data } = await api.get(`/jobs/${jobId}`);
+    return data;
+  }
+};
+
 export default api;

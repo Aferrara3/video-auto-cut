@@ -20,7 +20,6 @@ import SearchIcon from '@mui/icons-material/Search';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import InfoIcon from '@mui/icons-material/Info';
 import CloseIcon from '@mui/icons-material/Close';
-import PlayCircleOutlineIcon from '@mui/icons-material/PlayCircleOutline';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { broll } from '../api/client';
 
@@ -125,14 +124,6 @@ export default function BRollLibrary() {
         videoRef.current.currentTime = selectedItem.timestamp;
     }
   }, [selectedItem]);
-
-  const getVideoUrl = (path: string) => {
-      // Very basic path manipulation for prototype
-      const filename = path.split('/').pop();
-      return `/api/files/${filename}`; // We need to ensure backend mounts /files or similar
-      // Wait, backend has @app.get("/files/{filename}")
-      // So url is /files/{filename}
-  };
 
   const items = displayItems;
 

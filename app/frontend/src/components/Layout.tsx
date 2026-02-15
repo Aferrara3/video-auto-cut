@@ -20,6 +20,7 @@ import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import VideoLibraryIcon from '@mui/icons-material/VideoLibrary';
 import MovieEditIcon from '@mui/icons-material/MovieEdit';
+import DirectionsRunIcon from '@mui/icons-material/DirectionsRun';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
@@ -114,6 +115,7 @@ export default function Layout() {
   const menuItems = [
     { text: 'B-Roll Library', icon: <VideoLibraryIcon />, path: '/broll' },
     { text: 'Story Studio', icon: <MovieEditIcon />, path: '/story' },
+    { text: 'Action Studio', icon: <DirectionsRunIcon />, path: '/action' },
   ];
 
   return (

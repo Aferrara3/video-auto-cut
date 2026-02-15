@@ -13,9 +13,14 @@ import {
     ListItem,
     ListItemText,
     Divider,
-    Alert
+    Alert,
+    LinearProgress
 } from '@mui/material';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import MovieIcon from '@mui/icons-material/Movie';
+import DescriptionIcon from '@mui/icons-material/Description';
+import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
+import DownloadIcon from '@mui/icons-material/Download';
 import { jobs } from '../api/client';
 import { useMutation, useQuery } from '@tanstack/react-query';
 
@@ -27,76 +32,69 @@ export default function StoryStudio() {
   const [srtContent, setSrtContent] = React.useState<string>('');
   const [plan, setPlan] = React.useState<any[]>([]);
   const [finalVideoUrl, setFinalVideoUrl] = React.useState<string | null>(null);
-  const [pollInterval, setPollInterval] = React.useState<number | false>(false);
-
+  
   // Status Polling
-  const { data: jobStatus } = useQuery({
+  const { data: jobStatus, refetch } = useQuery({
       queryKey: ['jobStatus', jobId],
       queryFn: () => jobs.getStatus(jobId!),
-      enabled: !!jobId && !!pollInterval,
-      refetchInterval: pollInterval,
+      enabled: !!jobId,
+      refetchInterval: (query) => {
+          const data = query.state.data;
+          if (!data) return 2000;
+          if (['done', 'failed'].includes(data.status)) return false;
+          // If we are in a waiting state (transcribed, planned), stop polling until action taken
+          // But actually we want to poll to detect completion of background tasks
+          return 2000;
+      },
   });
 
-  // Watch status changes to auto-advance or stop polling
+  // Watch status changes to auto-update local state
   React.useEffect(() => {
       if (!jobStatus) return;
 
-      if (activeStep === 1 && jobStatus.status === 'transcribed') {
+      if (jobStatus.status === 'transcribed' && !srtContent) {
           setSrtContent(jobStatus.srt_content || '');
-          setPollInterval(false); // Stop polling
+          if (activeStep === 0) setActiveStep(1); 
       }
-      else if (activeStep === 2 && jobStatus.status === 'planned') {
+      else if (jobStatus.status === 'planned') {
           setPlan(jobStatus.plan || []);
-          setPollInterval(false);
+          if (activeStep === 1) setActiveStep(2);
       }
-      else if (activeStep === 3 && jobStatus.status === 'done') {
+      else if (jobStatus.status === 'done') {
           setFinalVideoUrl(jobStatus.final_video_url);
-          setPollInterval(false);
+          if (activeStep === 2) setActiveStep(3);
       }
-      else if (jobStatus.status === 'failed') {
-          setPollInterval(false);
-      }
-  }, [jobStatus, activeStep]);
+  }, [jobStatus, activeStep, srtContent, plan, finalVideoUrl]);
 
   // Mutations
   const uploadMutation = useMutation({
       mutationFn: jobs.upload,
       onSuccess: (data) => {
           setJobId(data.job_id);
-          handleNext();
+          // Don't auto-advance yet, let polling detect 'uploaded' or 'transcribing'
       }
   });
 
   const transcribeMutation = useMutation({
       mutationFn: () => jobs.transcribe(jobId!),
       onSuccess: () => {
-          setPollInterval(2000); // Start polling
+          refetch();
       }
   });
 
   const planMutation = useMutation({
       mutationFn: () => jobs.plan(jobId!, srtContent),
       onSuccess: () => {
-          handleNext(); // Move to Plan step view
-          setPollInterval(2000); // Start polling
+          refetch();
       }
   });
 
   const renderMutation = useMutation({
       mutationFn: () => jobs.render(jobId!, plan),
       onSuccess: () => {
-          handleNext(); // Move to Render step view
-          setPollInterval(2000);
+          refetch();
       }
   });
-
-  const handleNext = () => {
-    setActiveStep((prev) => prev + 1);
-  };
-
-  const handleBack = () => {
-    setActiveStep((prev) => prev - 1);
-  };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
@@ -104,95 +102,144 @@ export default function StoryStudio() {
     }
   };
 
-  const handleTranscribeStart = () => {
-      transcribeMutation.mutate();
-  };
-  
-  const handlePlanStart = () => {
-      planMutation.mutate();
-  };
-
-  const handleRenderStart = () => {
-      renderMutation.mutate();
-  };
-
   const renderStepContent = (step: number) => {
     switch (step) {
       case 0: // Upload
+        if (jobId && jobStatus?.status !== 'uploaded') {
+            // If already uploaded and moved past, show next step (handled by useEffect)
+            // But if stuck here:
+            return (
+                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 8 }}>
+                     <CircularProgress />
+                     <Typography sx={{ mt: 2 }}>Initializing Job...</Typography>
+                 </Box>
+            );
+        }
+
         return (
-            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
-                <Typography variant="body1" gutterBottom>Upload your raw interview footage here.</Typography>
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 8, border: '2px dashed #444', borderRadius: 2 }}>
+                <CloudUploadIcon sx={{ fontSize: 60, color: 'text.secondary', mb: 2 }} />
+                <Typography variant="h6" gutterBottom>Upload Raw Interview</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+                    MP4, MOV, MKV files supported
+                </Typography>
                 <Button
                     component="label"
                     variant="contained"
                     size="large"
-                    startIcon={uploadMutation.isPending ? <CircularProgress size={20} color="inherit" /> : <CloudUploadIcon />}
                     disabled={uploadMutation.isPending}
                 >
-                    Upload Video
+                    {uploadMutation.isPending ? 'Uploading...' : 'Select Video File'}
                     <input type="file" hidden accept="video/*" onChange={handleFileUpload} />
                 </Button>
             </Box>
         );
       
       case 1: // Transcribe
-        if (!jobStatus || jobStatus.status === 'uploaded' || jobStatus.status === 'transcribing') {
-             // Not started or In Progress
-             const isTranscribing = jobStatus?.status === 'transcribing' || transcribeMutation.isPending;
+        const isTranscribing = jobStatus?.status === 'transcribing' || transcribeMutation.isPending;
+        const isTranscribed = jobStatus?.status === 'transcribed' || jobStatus?.status === 'planning' || jobStatus?.status === 'planned' || jobStatus?.status === 'rendering' || jobStatus?.status === 'done';
+
+        if (!isTranscribed && !srtContent) {
              return (
-                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
+                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 6 }}>
+                     <DescriptionIcon sx={{ fontSize: 60, color: 'text.secondary', mb: 2 }} />
+                     <Typography variant="h6" gutterBottom>Transcription Required</Typography>
+                     <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: 400, textAlign: 'center' }}>
+                         We need to transcribe the audio to text so you can edit the story. This uses Whisper AI.
+                     </Typography>
+                     
                      {!isTranscribing ? (
-                         <Button variant="contained" onClick={handleTranscribeStart}>Start Transcription</Button>
+                         <Button variant="contained" onClick={() => transcribeMutation.mutate()} startIcon={<AutoAwesomeIcon />}>
+                             Start Transcription
+                         </Button>
                      ) : (
-                         <>
-                             <CircularProgress sx={{ mb: 2 }} />
-                             <Typography>Transcribing video... this may take a while.</Typography>
-                         </>
+                         <Box sx={{ width: '100%', maxWidth: 400, textAlign: 'center' }}>
+                             <LinearProgress sx={{ mb: 2 }} />
+                             <Typography>Transcribing... this may take a few minutes.</Typography>
+                         </Box>
                      )}
                  </Box>
              );
         }
-        // Done
+        
         return (
             <Box>
-                <Typography variant="subtitle1" gutterBottom>Edit Transcript (SRT Format)</Typography>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6">Edit Transcript</Typography>
+                    <Button 
+                        variant="contained" 
+                        onClick={() => planMutation.mutate()}
+                        startIcon={planMutation.isPending ? <CircularProgress size={20} color="inherit" /> : <AutoAwesomeIcon />}
+                        disabled={planMutation.isPending}
+                    >
+                        {planMutation.isPending ? 'Analyzing...' : 'Generate Cut Plan'}
+                    </Button>
+                </Box>
                 <TextField 
                     fullWidth
                     multiline
-                    rows={15}
+                    rows={20}
                     value={srtContent}
                     onChange={(e) => setSrtContent(e.target.value)}
                     variant="outlined"
-                    sx={{ fontFamily: 'monospace' }}
+                    sx={{ fontFamily: 'monospace', bgcolor: 'background.paper' }}
+                    placeholder="Transcript will appear here..."
                 />
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                    * You can edit the text directly. The AI will use this to find the best clips.
+                </Typography>
             </Box>
         );
 
       case 2: // Plan
-        if (!jobStatus || jobStatus.status === 'transcribed' || jobStatus.status === 'planning') {
-             const isPlanning = jobStatus?.status === 'planning' || planMutation.isPending;
+        const isPlanning = jobStatus?.status === 'planning' || planMutation.isPending;
+        const isPlanned = jobStatus?.status === 'planned' || jobStatus?.status === 'rendering' || jobStatus?.status === 'done';
+        
+        if (isPlanning && !isPlanned) {
              return (
-                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
-                      <CircularProgress sx={{ mb: 2 }} />
-                      <Typography>Generating Story Plan with AI...</Typography>
+                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 6 }}>
+                      <CircularProgress size={60} sx={{ mb: 3 }} />
+                      <Typography variant="h6">Analyzing Story Structure...</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                          Our AI is reading your transcript to identify the most compelling narrative arc.
+                      </Typography>
                  </Box>
              );
         }
-        // Planned
+
         return (
             <Box>
-                <Typography variant="subtitle1" gutterBottom>Proposed Story Cut List</Typography>
-                <Paper variant="outlined" sx={{ maxHeight: 400, overflow: 'auto' }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="h6">Proposed Cut List</Typography>
+                    <Button 
+                        variant="contained" 
+                        color="secondary"
+                        onClick={() => renderMutation.mutate()}
+                        startIcon={renderMutation.isPending ? <CircularProgress size={20} color="inherit" /> : <MovieIcon />}
+                        disabled={renderMutation.isPending}
+                    >
+                        {renderMutation.isPending ? 'Rendering...' : 'Render Final Video'}
+                    </Button>
+                </Box>
+                <Paper variant="outlined" sx={{ maxHeight: 500, overflow: 'auto' }}>
                     <List>
                         {plan.map((clip: any, index: number) => (
                             <React.Fragment key={index}>
-                                <ListItem>
+                                <ListItem alignItems="flex-start">
                                     <ListItemText 
-                                        primary={clip.spoken_text}
-                                        secondary={`${clip.start} - ${clip.end}`}
+                                        primary={
+                                            <Typography variant="subtitle1" component="div">
+                                                {clip.spoken_text || "(No spoken text)"}
+                                            </Typography>
+                                        }
+                                        secondary={
+                                            <Typography variant="caption" color="primary">
+                                                {clip.start} — {clip.end}
+                                            </Typography>
+                                        }
                                     />
                                 </ListItem>
-                                <Divider />
+                                <Divider component="li" />
                             </React.Fragment>
                         ))}
                     </List>
@@ -201,33 +248,47 @@ export default function StoryStudio() {
         );
 
       case 3: // Render
-        if (!jobStatus || jobStatus.status === 'planned' || jobStatus.status === 'rendering') {
+        const isDone = jobStatus?.status === 'done' && finalVideoUrl;
+        
+        if (!isDone) {
              return (
-                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
-                      <CircularProgress sx={{ mb: 2 }} />
-                      <Typography>Rendering final video...</Typography>
+                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 6 }}>
+                      <CircularProgress size={60} sx={{ mb: 3 }} />
+                      <Typography variant="h6">Rendering Video...</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                          Stitching clips together using FFmpeg.
+                      </Typography>
                  </Box>
              );
         }
-        // Done
+
         return (
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
-                <Typography variant="h5" gutterBottom>Video Ready!</Typography>
-                {finalVideoUrl && (
+                <Typography variant="h4" gutterBottom color="primary">Story Cut Ready!</Typography>
+                <Paper elevation={3} sx={{ p: 1, mb: 3, borderRadius: 2, overflow: 'hidden' }}>
                     <video 
                         controls 
-                        src={`/api${finalVideoUrl}`} 
-                        style={{ maxWidth: '100%', maxHeight: 400, marginBottom: 16 }} 
+                        src={finalVideoUrl || ""} 
+                        style={{ maxWidth: '100%', maxHeight: '60vh', display: 'block' }} 
                     />
-                )}
+                </Paper>
                 <Button 
                     variant="contained" 
                     color="primary" 
-                    href={`/api${finalVideoUrl}`} 
+                    size="large"
+                    href={finalVideoUrl || "#"} 
                     download
                     target="_blank"
+                    startIcon={<DownloadIcon />}
                 >
                     Download Video
+                </Button>
+                <Button 
+                    variant="text" 
+                    sx={{ mt: 2 }}
+                    onClick={() => window.location.reload()}
+                >
+                    Start New Story
                 </Button>
             </Box>
         );
@@ -238,10 +299,13 @@ export default function StoryStudio() {
   };
 
   return (
-    <Box sx={{ width: '100%' }}>
-      <Typography variant="h4" sx={{ mb: 3 }}>Story Studio</Typography>
+    <Box sx={{ width: '100%', maxWidth: 1200, margin: '0 auto' }}>
+      <Typography variant="h4" gutterBottom component="div" sx={{ mb: 4, display: 'flex', alignItems: 'center', gap: 2 }}>
+        <MovieIcon fontSize="large" color="secondary" />
+        Story Studio
+      </Typography>
       
-      <Stepper activeStep={activeStep} sx={{ mb: 4 }}>
+      <Stepper activeStep={activeStep} sx={{ mb: 5 }}>
         {steps.map((label) => (
           <Step key={label}>
             <StepLabel>{label}</StepLabel>
@@ -250,44 +314,14 @@ export default function StoryStudio() {
       </Stepper>
       
       {jobStatus?.status === 'failed' && (
-          <Alert severity="error" sx={{ mb: 2 }}>
+          <Alert severity="error" sx={{ mb: 3 }}>
               Error: {jobStatus.error || 'Operation failed'}
           </Alert>
       )}
 
-      <Paper sx={{ p: 4, minHeight: 300 }}>
+      {/* Main Content Area */}
+      <Paper sx={{ p: 4, minHeight: 400 }}>
         {renderStepContent(activeStep)}
-        
-        {/* Navigation Buttons */}
-        <Box sx={{ display: 'flex', flexDirection: 'row', pt: 2, mt: 2, borderTop: 1, borderColor: 'divider' }}>
-          <Button
-            color="inherit"
-            disabled={activeStep === 0 || activeStep === 3} // Can't go back from final? Or maybe yes.
-            onClick={handleBack}
-            sx={{ mr: 1 }}
-          >
-            Back
-          </Button>
-          <Box sx={{ flex: '1 1 auto' }} />
-          
-          {/* Custom Next Actions based on State */}
-          {activeStep === 1 && jobStatus?.status === 'transcribed' && (
-               <Button onClick={handlePlanStart} variant="contained">
-                   Generate Plan
-               </Button>
-          )}
-          
-          {activeStep === 2 && jobStatus?.status === 'planned' && (
-               <Button onClick={handleRenderStart} variant="contained">
-                   Render Video
-               </Button>
-          )}
-          
-          {activeStep === 3 && jobStatus?.status === 'done' && (
-              <Button onClick={() => window.location.reload()}>Start Over</Button>
-          )}
-
-        </Box>
       </Paper>
     </Box>
   );
