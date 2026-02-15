@@ -2,12 +2,21 @@ import os
 import subprocess
 import pandas as pd
 from pathlib import Path
-import whisper
-from pyannote.audio import Pipeline
+
+try:
+    import whisper
+    from pyannote.audio import Pipeline
+except ImportError:
+    whisper = None
+    Pipeline = None
+    print("Warning: 'whisper' or 'pyannote.audio' not found. Transcription will fail if attempted.")
 
 
 def transcribe_video(input_path: str, hf_token: str, model_size="base", diarization_device="gpu") -> Path:
     """Run Whisper + PyAnnote diarization and save aligned SRT."""
+    if whisper is None or Pipeline is None:
+        raise ImportError("Cannot transcribe: whisper or pyannote.audio not installed.")
+    
     input_path = Path(input_path)
     audio_path = input_path.with_suffix(".wav")
     srt_path = input_path.with_suffix(".srt")
@@ -112,11 +121,15 @@ if __name__ == "__main__":
 
     load_dotenv()
     HF_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
-
-    input_video = "interview1.mp4"
-    srt_path = transcribe_video(
-        input_video,
-        hf_token=HF_TOKEN,
-        model_size="base",
-        diarization_device="gpu"
-    )
+    
+    # Example usage
+    input_video = "sample_videos/interview1.mp4"
+    if os.path.exists(input_video):
+        srt_path = transcribe_video(
+            input_video,
+            hf_token=HF_TOKEN,
+            model_size="base",
+            diarization_device="gpu"
+        )
+    else:
+        print(f"Sample video {input_video} not found.")
