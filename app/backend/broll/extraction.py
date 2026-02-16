@@ -60,6 +60,7 @@ def extract_keyframes(video_path: str, output_dir: str, threshold: float = 0.5, 
     
     keyframes = []
     prev_frame = None
+    last_keyframe_frame = None  # Store the actual image of the last keyframe
     last_keyframe_idx = -min_interval
     frame_idx = 0
     
@@ -71,19 +72,50 @@ def extract_keyframes(video_path: str, output_dir: str, threshold: float = 0.5, 
         if not ret:
             break
         
+        if frame_idx % 100 == 0:
+            print(f"Processed {frame_idx}/{total_frames} frames...")
+
+        # Always add first frame
         is_keyframe = False
         
-        # Always add first frame
+        # Check scene change
         if frame_idx == 0:
             is_keyframe = True
-        # Check scene change
-        elif frame_idx - last_keyframe_idx >= min_interval:
-            diff = calculate_histogram_diff(prev_frame, frame)
-            if diff > threshold:
-                is_keyframe = True
+        elif frame_idx - last_keyframe_idx >= 5: # Minimum interval check (5 frames)
+            # Compare against LAST KEYFRAME (to detect slow changes/fades)
+            # AND compare against PREV FRAME (to ensure local activity)
+            
+            # 1. Diff vs Last Keyframe
+            ref_frame = last_keyframe_frame if last_keyframe_frame is not None else prev_frame
+            diff_cumulative = calculate_histogram_diff(ref_frame, frame)
+            
+            # 2. Diff vs Prev Frame
+            diff_local = calculate_histogram_diff(prev_frame, frame)
+            
+            # Logic:
+            # - If cumulative change is HUGE (>= 0.8), it's a new scene regardless of speed (e.g. cut)
+            # - If cumulative change is MODERATE (>= 0.5) AND local change is SIGNIFICANT (>= 0.1), it's a new scene
+            # - If cumulative change is SMALL (< 0.5), ignore
+            
+            if diff_cumulative >= 0.8:
+                 is_keyframe = True
+                 print(f"Keyframe detected (Major Change) at frame {frame_idx} (cum_diff: {diff_cumulative:.3f})")
+            elif diff_cumulative >= 0.5 and diff_local >= 0.05:
+                 is_keyframe = True
+                 print(f"Keyframe detected (Scene Shift) at frame {frame_idx} (cum_diff: {diff_cumulative:.3f}, local_diff: {diff_local:.3f})")
         
         if is_keyframe:
-            timestamp = frame_idx / fps if fps > 0 else 0
+            # DEDUPLICATION CHECK
+            # If this new keyframe is too similar to the last one (e.g. diff < 0.3), skip it
+            # This handles the case where "fade in" triggers multiple times
+            if last_keyframe_frame is not None:
+                sim_diff = calculate_histogram_diff(last_keyframe_frame, frame)
+                if sim_diff < 0.3:
+                    print(f"Skipping redundant keyframe at {frame_idx} (diff: {sim_diff:.3f} < 0.3)")
+                    is_keyframe = False
+            
+            if is_keyframe:
+                timestamp = frame_idx / fps if fps > 0 else 0
             
             # Save frame to disk
             frame_filename = f"{os.path.splitext(video_filename)[0]}_frame_{frame_idx}.jpg"
@@ -105,6 +137,7 @@ def extract_keyframes(video_path: str, output_dir: str, threshold: float = 0.5, 
             keyframes.append(kf_data)
             
             last_keyframe_idx = frame_idx
+            last_keyframe_frame = frame.copy() # Store copy of keyframe
         
         prev_frame = frame.copy()
         frame_idx += 1

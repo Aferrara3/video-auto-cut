@@ -38,3 +38,30 @@ Action Cut workflow (ground 0 somewhat)
 Story Cut workflow (intermediary artifacts display and HitL type expereince)s
 
 
+
+
+-------------------------------------------------
+2/16/26 Testing Notes
+
+BRoll Library
+- Keyframe detection needs work. See "black screen" example when frame[0] is black, frame[~1] starts actual video but our setup prevents that histogram pickup due to min_interval=30 default. Need more robust handling in event of drastic changes of scene.
+
+Action Studio
+- Needs another human-in-the-loop step to review keyframes before describing them!
+- Needs more verbose logging
+  - Runtime have no idea in logs what is happening; try long video to reproduce
+  "Extracting keyframes from uploads/8619af8c-22a0-40d7-99ca-296ad7cca7d7_rawfootage_mary(Interview Original).mp4..." then crickets
+
+Story Studio
+- Upload video -> starts polling a new job_id, but frontend just seems stuck, doesn't indicate anything, still showing click to upload box
+  - Maybe transcribing in background? On machine without whisper/pyanote it was falling back to cache default properly...
+  - Bring over Jobs UI, show some status indicator that it is transcribing
+  - Network instpector shows "status": "uploaded". Running for many minutes, no log indicating anything else happening.
+
+
+----
+
+Fixed most of above. Keyframe detection is still ass, but will address later.
+My computer also seems to be grinding to a halt rn, idk what that is about, was fine before this incoming commit but YOLO.
+
+Some smaller bugs like broll segment delete works but doesn't reflect in UI until closing out of the selected video.

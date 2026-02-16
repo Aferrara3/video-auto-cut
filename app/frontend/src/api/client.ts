@@ -23,6 +23,10 @@ export const broll = {
   getAll: async () => {
     const { data } = await api.get('/broll/library');
     return data;
+  },
+  delete: async (itemId: string) => {
+    const { data } = await api.delete(`/broll/item/${itemId}`);
+    return data;
   }
 };
 
@@ -60,6 +64,10 @@ export const action = {
     const { data } = await api.post('/action/ingest', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
+    return data;
+  },
+  describe: async (jobId: string, segmentIds?: string[]) => {
+    const { data } = await api.post(`/action/${jobId}/describe`, { segment_ids: segmentIds });
     return data;
   },
   plan: async (jobId: string) => {

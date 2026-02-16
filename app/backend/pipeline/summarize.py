@@ -42,13 +42,49 @@ def select_story_segments(srt_path: str, max_duration: int = 120, model="gpt-4o-
     srt_text = extract_text_from_srt(srt_path)
     output_json = Path(srt_path).with_suffix(".story_segments.json")
     
-    # Use gh_copilot by default for summarization due to context window requirements
-    # unless LLM_PROVIDER is explicitly set to something else that can handle it
-    provider = os.getenv("LLM_PROVIDER", "gh_copilot")
-    client = get_llm_client(provider)
+    # Check if 'gh' is available if provider is gh_copilot
+    import shutil
+    has_gh = shutil.which("gh") is not None
     
-    # If using Azure with default token, we warn about limits
-    # But llm_client handles the abstraction.
+    provider = os.getenv("LLM_PROVIDER")
+    
+    # If no provider set, or set to gh_copilot but gh is missing, try others
+    if not provider:
+        if os.getenv("GITHUB_TOKEN") or os.getenv("COPILOT_TOKEN"):
+             # Azure Inference usually requires GITHUB_TOKEN
+             # This works without 'gh' CLI
+            provider = "azure"
+        elif has_gh:
+            provider = "gh_copilot"
+        elif os.getenv("OPENAI_API_KEY"):
+            provider = "openai"
+        else:
+            provider = "gh_copilot" # Fallback to default even if missing, to let error handle it or mock
+            
+    if provider == "gh_copilot" and not has_gh:
+         print("⚠️ 'gh' CLI not found. Switching provider to 'azure' (if token exists) or 'mock'.")
+         if os.getenv("GITHUB_TOKEN") or os.getenv("COPILOT_TOKEN"):
+             provider = "azure"
+         elif os.getenv("OPENAI_API_KEY"):
+             provider = "openai"
+         else:
+             print("⚠️ No valid LLM credentials found. Using mock generator.")
+             # We can't use llm_client without creds usually, so just return mock immediately
+             # But let's let the try/catch block below handle the fallback to mock
+             pass 
+
+    try:
+        client = get_llm_client(provider)
+    except Exception as e:
+        print(f"⚠️ Failed to initialize LLM client: {e}")
+        client = None
+
+    # If client init failed (e.g. no tokens), jump to mock
+    if not client:
+         print("⚠️ No LLM client available. Falling back to mock segments.")
+         mock_segments = parse_srt(srt_path)[:5]
+         Path(output_json).write_text(json.dumps(mock_segments, indent=2), encoding="utf-8")
+         return output_json
     
     print(f"🚀 Using LLM Provider: {provider}")
 
@@ -109,7 +145,27 @@ def select_story_segments(srt_path: str, max_duration: int = 120, model="gpt-4o-
     except Exception as e:
         print(f"❌ LLM failed: {e}")
         print("⚠️ Falling back to mock segments.")
-        mock_segments = parse_srt(srt_path)[:5]
+        
+        # Smart Mock: Pick segments with interesting keywords if possible
+        all_segments = parse_srt(srt_path)
+        keywords = ["important", "remember", "key", "so", "but", "however", "finally", "result", "great", "love"]
+        
+        smart_mock = []
+        duration = 0
+        
+        # First pass: look for keywords
+        for seg in all_segments:
+            if any(k in seg["spoken_text"].lower() for k in keywords):
+                smart_mock.append(seg)
+                # Estimate duration (approx 0.3s per word or diff timestamps)
+                # parsing timestamps '00:00:01.000' is hard without helper, let's just count segments
+                if len(smart_mock) >= 5: break
+                
+        # If not enough, fill with first few
+        if len(smart_mock) < 3:
+            smart_mock = all_segments[:5]
+            
+        mock_segments = smart_mock
         Path(output_json).write_text(json.dumps(mock_segments, indent=2), encoding="utf-8")
         return output_json
 

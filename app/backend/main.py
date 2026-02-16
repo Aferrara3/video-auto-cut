@@ -224,6 +224,15 @@ async def get_broll_library():
     items = storage.get_all_items()
     return {"items": items}
 
+@app.delete("/api/broll/item/{item_id}")
+async def delete_broll_item(item_id: str):
+    """Delete a B-roll item."""
+    try:
+        storage.delete_item(item_id)
+        return {"status": "success"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 # --- Story Workflow Endpoints ---
 @app.post("/api/jobs/upload")
 async def upload_job_video(file: UploadFile):
@@ -248,8 +257,9 @@ async def transcribe_job(job_id: str, background_tasks: BackgroundTasks):
     
     async def run_transcription():
         try:
+            print(f"[{job_id}] Transcription task started.")
             if HAS_FFMPEG and HAS_HF_TOKEN:
-                print(f"Starting real transcription for {job_id}")
+                print(f"[{job_id}] Starting real transcription with Whisper...")
                 video_path = jobs[job_id]["video_path"]
                 hf_token = os.getenv("HUGGINGFACE_TOKEN")
                 
@@ -261,6 +271,7 @@ async def transcribe_job(job_id: str, background_tasks: BackgroundTasks):
                     video_path, 
                     hf_token
                 )
+                print(f"[{job_id}] Transcription complete. Path: {srt_path}")
                 
                 # Read SRT content
                 with open(srt_path, "r") as f:
@@ -271,7 +282,7 @@ async def transcribe_job(job_id: str, background_tasks: BackgroundTasks):
                 jobs[job_id]["srt_content"] = content
                 
             else:
-                print(f"Mocking transcription (FFmpeg={HAS_FFMPEG}, HF_TOKEN={HAS_HF_TOKEN})")
+                print(f"[{job_id}] Mocking transcription (FFmpeg={HAS_FFMPEG}, HF_TOKEN={HAS_HF_TOKEN})")
                 await asyncio.sleep(3)
                 
                 # Try to load from cache if available (Demo Mode)
@@ -472,16 +483,16 @@ async def ingest_action(file: UploadFile, background_tasks: BackgroundTasks):
             job_keyframes_dir = os.path.join(KEYFRAMES_DIR, job_id)
             os.makedirs(job_keyframes_dir, exist_ok=True)
             
-            # Run the heavy lifting
-            segments = ingest.ingest_action_video(upload_path, job_keyframes_dir)
+            # Phase 1: Only extract keyframes
+            segments = ingest.extract_action_keyframes(upload_path, job_keyframes_dir)
             
             # Update paths for web serving
             for seg in segments:
                 seg["image_url"] = f"/files/{job_id}/{seg['image_filename']}"
                 
             jobs[job_id]["segments"] = segments
-            jobs[job_id]["status"] = "ingested"
-            print(f"Action ingest complete for {job_id}: {len(segments)} segments")
+            jobs[job_id]["status"] = "needs_review"  # New state
+            print(f"Action ingest complete for {job_id}: {len(segments)} segments. Waiting for review.")
             
         except Exception as e:
             print(f"Action ingest failed: {e}")
@@ -491,6 +502,90 @@ async def ingest_action(file: UploadFile, background_tasks: BackgroundTasks):
     background_tasks.add_task(run_ingest)
     
     return {"job_id": job_id, "status": "ingesting"}
+
+class DescribeActionRequest(BaseModel):
+    segment_ids: Optional[List[str]] = None
+
+@app.post("/api/action/{job_id}/describe")
+async def describe_action_job(job_id: str, request: Optional[DescribeActionRequest] = None, background_tasks: BackgroundTasks = None):
+    """
+    Trigger description generation for extracted keyframes.
+    Call this after user approves keyframes.
+    Optional: Provide list of segment_ids to keep (others are discarded).
+    """
+    # background_tasks is implicitly injected by FastAPI if present in signature, 
+    # but since we made request optional and use non-default arg after default arg in python, 
+    # we need to be careful with ordering. 
+    # FastAPI handles this but for clarity:
+    
+    if job_id not in jobs:
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+        
+    job = jobs[job_id]
+    if job.get("status") != "needs_review":
+        return JSONResponse({"error": "Job not ready for description (must be in 'needs_review')"}, status_code=400)
+    
+    # Filter segments if IDs provided
+    if request and request.segment_ids:
+        original_count = len(job["segments"])
+        job["segments"] = [s for s in job["segments"] if s["id"] in request.segment_ids]
+        print(f"Filtered segments from {original_count} to {len(job['segments'])}")
+        
+    job["status"] = "describing"
+    
+    def run_describe():
+        try:
+            print(f"Starting description for {job_id}")
+            # Phase 2: Describe keyframes
+            # We iterate manually to save progress
+            total = len(job["segments"])
+            print(f"Starting description generation for {total} keyframes...")
+            
+            for i, seg in enumerate(job["segments"]):
+                # Skip if already described (in case of restart)
+                if "description" in seg and seg["description"] and not seg["description"].startswith("[Error"):
+                    continue
+                    
+                image_path = seg["image_path"] # Assuming absolute path is stored in backend segments
+                # If image_path is missing in segment (it might have only image_url for frontend), reconstruct it or rely on structure
+                # The ingest.extract_action_keyframes returns dicts with image_path.
+                
+                print(f"[{i+1}/{total}] Describing frame {seg.get('frame_number', '?')}...")
+                
+                try:
+                    # Use existing import
+                    if "image_path" in seg and os.path.exists(seg["image_path"]):
+                         desc = description.describe_keyframe(seg["image_path"])
+                         seg["description"] = desc
+                         print(f"  -> {desc[:60]}...")
+                    else:
+                         seg["description"] = "[Error: Image file not found]"
+                         
+                except Exception as e:
+                    print(f"  -> Error describing frame: {e}")
+                    seg["description"] = f"[Error: {str(e)}]"
+                
+                # Save progress every frame (or every N frames)
+                # This triggers the persistence callback in JobState
+                # We need to explicitly re-assign the list to trigger the setter in JobState
+                # However, updating a dict inside the list might not trigger it if JobState only tracks top-level keys.
+                # JobState.__setitem__ is called on `job["segments"] = ...`
+                # But here we modify `seg` which is a reference to a dict inside the list.
+                # So we must re-assign the list to the job object to trigger persistence.
+                current_segments = list(job["segments"])
+                current_segments[i] = seg
+                job["segments"] = current_segments
+                
+            job["status"] = "ingested"
+            print(f"Description complete for {job_id}")
+            
+        except Exception as e:
+            print(f"Description failed: {e}")
+            job["status"] = "failed"
+            job["error"] = str(e)
+            
+    background_tasks.add_task(run_describe)
+    return {"status": "describing"}
 
 @app.post("/api/action/{job_id}/plan")
 async def plan_action_cut(job_id: str):

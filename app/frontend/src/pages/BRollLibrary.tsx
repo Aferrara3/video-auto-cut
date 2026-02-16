@@ -23,6 +23,8 @@ import CloseIcon from '@mui/icons-material/Close';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { broll } from '../api/client';
 
+import DeleteIcon from '@mui/icons-material/Delete';
+
 // Define interface for b-roll item
 interface BRollItem {
   id: string;
@@ -52,6 +54,30 @@ export default function BRollLibrary() {
     queryFn: broll.getAll,
   });
 
+  // Delete mutation
+  const deleteMutation = useMutation({
+    mutationFn: broll.delete,
+    onSuccess: (_, deletedItemId) => {
+      queryClient.invalidateQueries({ queryKey: ['broll'] });
+      // Update selectedGroup if needed
+      if (selectedGroup) {
+          const updatedItems = selectedGroup.items.filter(i => i.id !== deletedItemId);
+          if (updatedItems.length === 0) {
+              setSelectedGroup(null);
+          } else {
+              setSelectedGroup({ ...selectedGroup, items: updatedItems });
+          }
+      }
+    },
+  });
+
+  const handleDeleteItem = (itemId: string, event: React.MouseEvent) => {
+      event.stopPropagation();
+      if (window.confirm('Are you sure you want to delete this segment?')) {
+          deleteMutation.mutate(itemId);
+      }
+  };
+
   // Semantic search query - only runs when semanticQuery is set
   const { data: semanticData, isLoading: isLoadingSemantic } = useQuery({
     queryKey: ['broll', 'semantic', semanticQuery],
@@ -59,28 +85,61 @@ export default function BRollLibrary() {
     enabled: searchMode === 'semantic' && !!semanticQuery,
   });
 
-  // Determine which items to show
-  const displayItems = React.useMemo(() => {
+  // Determine which items to show and group them by video
+  const groupedItems = React.useMemo(() => {
+    let itemsToDisplay = [];
+    
     if (searchMode === 'semantic') {
-        return semanticData?.results || [];
+        itemsToDisplay = semanticData?.results || [];
     } else {
         // Quick mode: Client-side filter
         const allItems = allItemsData?.items || [];
-        if (!searchQuery) return allItems;
-        
-        const lowerQuery = searchQuery.toLowerCase();
-        return allItems.filter((item: BRollItem) => 
-            item.description.toLowerCase().includes(lowerQuery)
-        );
+        if (!searchQuery) {
+            itemsToDisplay = allItems;
+        } else {
+            const lowerQuery = searchQuery.toLowerCase();
+            itemsToDisplay = allItems.filter((item: BRollItem) => 
+                item.description.toLowerCase().includes(lowerQuery)
+            );
+        }
     }
+
+    // Group items by video source
+    const groups: { [key: string]: { videoName: string, items: BRollItem[] } } = {};
+    
+    itemsToDisplay.forEach((item: BRollItem) => {
+        const videoName = item.video_path.split('/').pop() || 'Unknown Video';
+        if (!groups[videoName]) {
+            groups[videoName] = { videoName, items: [] };
+        }
+        groups[videoName].items.push(item);
+    });
+
+    return Object.values(groups);
   }, [searchMode, searchQuery, allItemsData, semanticData]);
 
   const isLoading = searchMode === 'semantic' ? isLoadingSemantic : isLoadingAll;
+
+  // New state for viewing a specific video group
+  const [selectedGroup, setSelectedGroup] = React.useState<{ videoName: string, items: BRollItem[] } | null>(null);
+
+  const handleGroupClick = (group: { videoName: string, items: BRollItem[] }) => {
+      setSelectedGroup(group);
+  };
+
+  const handleBackToLibrary = () => {
+      setSelectedGroup(null);
+  };
+
 
   const handleSearchKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
         setSearchMode('semantic');
         setSemanticQuery(searchQuery);
+        // Clear selected group when searching to show all results again
+        if (selectedGroup) {
+            setSelectedGroup(null);
+        }
     }
   };
 
@@ -89,6 +148,10 @@ export default function BRollLibrary() {
       if (searchMode === 'semantic') {
           // Reset to quick mode immediately on typing
           setSearchMode('quick'); 
+      }
+      // Clear selected group when searching to show all results again
+      if (selectedGroup) {
+          setSelectedGroup(null);
       }
   };
 
@@ -125,7 +188,6 @@ export default function BRollLibrary() {
     }
   }, [selectedItem]);
 
-  const items = displayItems;
 
   return (
     <Box>
@@ -167,44 +229,89 @@ export default function BRollLibrary() {
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 5 }}>
           <CircularProgress />
         </Box>
+      ) : selectedGroup ? (
+          // View: Selected Video Group Details
+          <Box>
+              <Button onClick={handleBackToLibrary} sx={{ mb: 2 }}>&larr; Back to Library</Button>
+              <Typography variant="h5" gutterBottom>{selectedGroup.videoName}</Typography>
+              <ImageList variant="masonry" cols={3} gap={8}>
+                {selectedGroup.items.map((item: BRollItem) => (
+                    <ImageListItem key={item.id}>
+                    <img
+                        src={`${item.keyframe_path}?w=248&fit=crop&auto=format`}
+                        srcSet={`${item.keyframe_path}?w=248&fit=crop&auto=format&dpr=2 2x`}
+                        alt={item.description}
+                        loading="lazy"
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => handleInfoClick(item)}
+                    />
+                    <ImageListItemBar
+                        title={item.description}
+                        subtitle={
+                        <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <span>@ {item.timestamp.toFixed(1)}s</span>
+                            {item.match_type === 'semantic' && (
+                            <Chip size="small" label="Semantic Match" color="primary" sx={{ height: 16, fontSize: '0.6rem' }} />
+                            )}
+                        </Box>
+                        }
+                        actionIcon={
+                        <Box sx={{ display: 'flex' }}>
+                            <IconButton
+                                sx={{ color: 'rgba(255, 255, 255, 0.54)' }}
+                                aria-label={`delete ${item.description}`}
+                                onClick={(e) => handleDeleteItem(item.id, e)}
+                            >
+                                <DeleteIcon />
+                            </IconButton>
+                            <IconButton
+                                sx={{ color: 'rgba(255, 255, 255, 0.54)' }}
+                                aria-label={`info about ${item.description}`}
+                                onClick={() => handleInfoClick(item)}
+                            >
+                                <InfoIcon />
+                            </IconButton>
+                        </Box>
+                        }
+                    />
+                    </ImageListItem>
+                ))}
+            </ImageList>
+          </Box>
       ) : (
+        // View: Video Groups
         <ImageList variant="masonry" cols={3} gap={8}>
-          {items.map((item: BRollItem) => (
-            <ImageListItem key={item.id}>
+          {groupedItems.map((group) => {
+             // Use first item as thumbnail for the group
+             const coverItem = group.items[0];
+             return (
+            <ImageListItem key={group.videoName}>
               <img
-                src={`${item.keyframe_path}?w=248&fit=crop&auto=format`}
-                srcSet={`${item.keyframe_path}?w=248&fit=crop&auto=format&dpr=2 2x`}
-                alt={item.description}
+                src={`${coverItem.keyframe_path}?w=248&fit=crop&auto=format`}
+                srcSet={`${coverItem.keyframe_path}?w=248&fit=crop&auto=format&dpr=2 2x`}
+                alt={group.videoName}
                 loading="lazy"
-                style={{ cursor: 'pointer' }}
-                onClick={() => handleInfoClick(item)}
+                style={{ cursor: 'pointer', opacity: 0.9 }}
+                onClick={() => handleGroupClick(group)}
               />
               <ImageListItemBar
-                title={item.description}
-                subtitle={
-                  <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <span>@ {item.timestamp.toFixed(1)}s</span>
-                    {item.match_type === 'semantic' && (
-                       <Chip size="small" label="Semantic Match" color="primary" sx={{ height: 16, fontSize: '0.6rem' }} />
-                    )}
-                  </Box>
-                }
+                title={group.videoName}
+                subtitle={`${group.items.length} segments found`}
                 actionIcon={
                   <IconButton
                     sx={{ color: 'rgba(255, 255, 255, 0.54)' }}
-                    aria-label={`info about ${item.description}`}
-                    onClick={() => handleInfoClick(item)}
+                    onClick={() => handleGroupClick(group)}
                   >
                     <InfoIcon />
                   </IconButton>
                 }
               />
             </ImageListItem>
-          ))}
+          )})}
         </ImageList>
       )}
       
-      {!isLoading && items.length === 0 && (
+      {!isLoading && groupedItems.length === 0 && (
         <Typography variant="body1" sx={{ textAlign: 'center', mt: 5, color: 'text.secondary' }}>
           No B-roll found. Upload a video to get started.
         </Typography>

@@ -52,6 +52,13 @@ export default function StoryStudio() {
   React.useEffect(() => {
       if (!jobStatus) return;
 
+      // Auto-advance from Uploaded to Transcribe view (Step 1)
+      if (jobStatus.status === 'uploaded' && activeStep === 0) {
+          // Stay on step 0 but show waiting UI until user clicks "Start Transcription" in step 1?
+          // No, Step 1 has the "Start Transcription" button. So move to Step 1.
+          setActiveStep(1);
+      }
+
       if (jobStatus.status === 'transcribed' && !srtContent) {
           setSrtContent(jobStatus.srt_content || '');
           if (activeStep === 0) setActiveStep(1); 
@@ -105,9 +112,20 @@ export default function StoryStudio() {
   const renderStepContent = (step: number) => {
     switch (step) {
       case 0: // Upload
-        if (jobId && jobStatus?.status !== 'uploaded') {
-            // If already uploaded and moved past, show next step (handled by useEffect)
-            // But if stuck here:
+        // If already uploaded, we should move to next step or show status
+        // The useEffect handles auto-advance, but if we are here and status is uploaded, show waiting
+        if (jobId && jobStatus?.status === 'uploaded') {
+             return (
+                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 8 }}>
+                     <CircularProgress />
+                     <Typography sx={{ mt: 2 }}>Upload Complete. Preparing...</Typography>
+                 </Box>
+             );
+        }
+
+        if (jobId && jobStatus?.status !== 'uploaded' && !jobStatus?.error) {
+             // If we have an ID but status isn't uploaded (and not yet transcribed which would move us to next step)
+             // Likely initializing
             return (
                  <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 8 }}>
                      <CircularProgress />

@@ -1,7 +1,12 @@
 import os
 import subprocess
 import pandas as pd
+import shutil
 from pathlib import Path
+from app.backend.utils import hash_file
+
+CACHE_DIR = Path("cache/transcriptions")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 try:
     import whisper
@@ -24,6 +29,18 @@ def transcribe_video(input_path: str, hf_token: str, model_size="base", diarizat
 
     if not hf_token:
         raise ValueError("HuggingFace token is required for PyAnnote diarization.")
+
+    # --- Check Cache ---
+    try:
+        file_hash = hash_file(input_path, algo="md5")
+        cached_srt = CACHE_DIR / f"{file_hash}.srt"
+        
+        if cached_srt.exists():
+            print(f"✅ Found cached transcript for {input_path.name} (MD5: {file_hash})")
+            shutil.copy(cached_srt, srt_path)
+            return srt_path
+    except Exception as e:
+        print(f"⚠️ Cache check failed: {e}")
 
     # --- Extract audio ---
     if not audio_path.exists():
@@ -100,6 +117,14 @@ def transcribe_video(input_path: str, hf_token: str, model_size="base", diarizat
     # --- Write SRT ---
     write_srt(df_aligned, srt_path)
     print(f"✅ SRT saved: {srt_path}")
+    
+    # --- Save to Cache ---
+    try:
+        shutil.copy(srt_path, cached_srt)
+        print(f"✅ Cached transcript to {cached_srt}")
+    except Exception as e:
+        print(f"⚠️ Failed to cache transcript: {e}")
+        
     return srt_path
 
 

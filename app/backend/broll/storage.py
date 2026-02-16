@@ -24,6 +24,11 @@ def add_items(items: List[Dict]):
     library.extend(items)
     save_library(library)
 
+def delete_item(item_id: str):
+    library = load_library()
+    new_library = [item for item in library if item["id"] != item_id]
+    save_library(new_library)
+
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
     if not v1 or not v2:
         return 0.0

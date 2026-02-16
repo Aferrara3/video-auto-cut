@@ -22,7 +22,7 @@ import DownloadIcon from '@mui/icons-material/Download';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { action as actionApi } from '../api/client';
 
-const steps = ['Upload Video', 'Analyze Content', 'Select Highlights', 'Render Video'];
+const steps = ['Upload Video', 'Extract Keyframes', 'Review & Describe', 'Select Highlights', 'Render Video'];
 
 interface Segment {
   id: string;
@@ -87,8 +87,9 @@ export default function ActionStudio() {
     setStatus(data.status || 'idle');
     upsertJob(targetJobId, data.status || 'idle', data.error);
     if (data.status === 'ingesting') setActiveStep(1);
-    if (data.status === 'ingested' || data.status === 'planning' || data.status === 'planned') setActiveStep(2);
-    if (data.status === 'rendering' || data.status === 'done') setActiveStep(3);
+    if (data.status === 'needs_review' || data.status === 'describing') setActiveStep(2);
+    if (data.status === 'ingested' || data.status === 'planning' || data.status === 'planned') setActiveStep(3);
+    if (data.status === 'rendering' || data.status === 'done') setActiveStep(4);
     if (data.segments) setSegments(data.segments);
     if (data.plan) setPlan(data.plan);
     if (data.final_video_url) setFinalVideoUrl(data.final_video_url);
@@ -111,7 +112,7 @@ export default function ActionStudio() {
   }, [hydrateFromStatus, removeJob]);
 
   React.useEffect(() => {
-    const activeJobs = jobHistory.filter((j) => ['ingesting', 'planning', 'rendering'].includes(j.status));
+    const activeJobs = jobHistory.filter((j) => ['ingesting', 'describing', 'planning', 'rendering'].includes(j.status));
     if (activeJobs.length === 0) return;
     const id = setInterval(async () => {
       for (const job of activeJobs) {
@@ -129,7 +130,7 @@ export default function ActionStudio() {
   }, [jobHistory, upsertJob, removeJob]);
 
   React.useEffect(() => {
-    if (!jobId || !['ingesting', 'planning', 'rendering'].includes(status)) return;
+    if (!jobId || !['ingesting', 'describing', 'planning', 'rendering'].includes(status)) return;
 
     const id = setInterval(async () => {
         try {
@@ -170,6 +171,25 @@ export default function ActionStudio() {
       setError(e?.message || 'Upload failed');
       setStatus('failed');
     }
+  };
+
+  const handleDescribe = async () => {
+    if (!jobId) return;
+    try {
+      setStatus('describing');
+      upsertJob(jobId, 'describing');
+      // Pass only the current segments (which may have been deleted by user)
+      const segmentIds = segments.map(s => s.id);
+      await actionApi.describe(jobId, segmentIds);
+    } catch (e: any) {
+      setError(e?.message || 'Description generation failed');
+      setStatus('failed');
+      upsertJob(jobId, 'failed', e?.message || 'Description generation failed');
+    }
+  };
+
+  const handleDeleteSegment = (segmentId: string) => {
+      setSegments(prev => prev.filter(s => s.id !== segmentId));
   };
 
   const handleGeneratePlan = async () => {
@@ -247,7 +267,7 @@ export default function ActionStudio() {
   };
 
   const statusColor = (s: string): 'default' | 'primary' | 'success' | 'warning' | 'error' =>
-    s === 'done' ? 'success' : s === 'failed' ? 'error' : ['planning', 'rendering', 'ingesting'].includes(s) ? 'warning' : 'default';
+    s === 'done' ? 'success' : s === 'failed' ? 'error' : ['planning', 'rendering', 'ingesting', 'describing'].includes(s) ? 'warning' : 'default';
 
   return (
     <Box sx={{ width: '100%', maxWidth: 1400, margin: '0 auto', display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 320px' }, gap: 3 }}>
@@ -297,7 +317,7 @@ export default function ActionStudio() {
       {activeStep === 1 && (
         <Box sx={{ textAlign: 'center', py: 8 }}>
           <CircularProgress size={60} />
-          <Typography variant="h6" sx={{ mt: 3 }}>Analyzing video content...</Typography>
+          <Typography variant="h6" sx={{ mt: 3 }}>Extracting keyframes...</Typography>
           <Box sx={{ width: '50%', margin: '20px auto' }}>
             <LinearProgress />
           </Box>
@@ -305,6 +325,62 @@ export default function ActionStudio() {
       )}
 
       {activeStep === 2 && (
+        <Box>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+                <Typography variant="h6">Review Keyframes ({segments.length})</Typography>
+                <Button 
+                    variant="contained" 
+                    onClick={handleDescribe}
+                    disabled={status === 'describing'}
+                    startIcon={status === 'describing' ? <CircularProgress size={20} color="inherit" /> : <AutoFixHighIcon />}
+                >
+                    {status === 'describing' ? 'Generating Descriptions...' : 'Approve & Analyze'}
+                </Button>
+            </Box>
+            
+            {status === 'describing' && (
+                <Box sx={{ mb: 3 }}>
+                    <LinearProgress />
+                    <Typography variant="caption" sx={{ mt: 1, display: 'block', textAlign: 'center' }}>
+                        Using AI to describe each frame. This may take a while...
+                    </Typography>
+                </Box>
+            )}
+
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, maxHeight: 600, overflowY: 'auto' }}>
+                {segments.map((seg) => (
+                    <Card key={seg.id} sx={{ width: 200, position: 'relative' }}>
+                        <CardMedia component="img" height="120" image={seg.image_url} />
+                        <CardContent sx={{ p: 1 }}>
+                             <Typography variant="caption" sx={{display: 'block'}}>Frame {seg.frame_number}</Typography>
+                             {seg.description && (
+                                 <Typography variant="caption" color="text.secondary" sx={{
+                                     display: '-webkit-box',
+                                     WebkitLineClamp: 3,
+                                     WebkitBoxOrient: 'vertical',
+                                     overflow: 'hidden',
+                                     fontSize: '0.65rem',
+                                     lineHeight: 1.1,
+                                     mt: 0.5
+                                 }}>
+                                     {seg.description}
+                                 </Typography>
+                             )}
+                        </CardContent>
+                        <IconButton 
+                            size="small" 
+                            onClick={() => handleDeleteSegment(seg.id)}
+                            sx={{ position: 'absolute', top: 0, right: 0, bgcolor: 'rgba(255,255,255,0.7)' }}
+                        >
+                            <DeleteOutlineIcon fontSize="small" color="error" />
+                        </IconButton>
+                    </Card>
+                ))}
+            </Box>
+        </Box>
+      )}
+
+      {activeStep === 3 && (
         <Box>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
             <Typography variant="h6">Found {segments.length} segments</Typography>
@@ -354,7 +430,7 @@ export default function ActionStudio() {
               <CircularProgress size={60} />
               <Typography sx={{ mt: 2 }}>Rendering Highlights...</Typography>
             </>
-          ) : finalVideoUrl ? (
+          ) : status === 'done' && finalVideoUrl ? (
             <>
               <Typography variant="h5" color="success.main" gutterBottom>Action Cut Ready!</Typography>
               <video controls width="100%" style={{ maxHeight: '60vh', borderRadius: 8, marginBottom: 20 }} src={finalVideoUrl} />
@@ -362,9 +438,11 @@ export default function ActionStudio() {
                 Download Video
               </Button>
             </>
-          ) : (
-            <Typography color="error">Something went wrong during rendering.</Typography>
-          )}
+          ) : status === 'done' ? (
+             <Typography color="error">Rendering finished but video URL is missing.</Typography>
+          ) : status === 'failed' ? (
+             <Typography color="error">Something went wrong during rendering.</Typography>
+          ) : null}
         </Box>
       )}
       </Box>
