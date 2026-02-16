@@ -115,7 +115,12 @@ class AzureInferenceClient(LLMClient):
                 except:
                     pass
             
-            endpoint = "https://models.inference.ai.azure.com"
+            endpoint = os.getenv("AZURE_INFERENCE_ENDPOINT", "https://models.inference.ai.azure.com").strip()
+            if not endpoint.startswith(("http://", "https://")):
+                endpoint = f"https://{endpoint}"
+            if endpoint.startswith("http://"):
+                logger.warning("AZURE_INFERENCE_ENDPOINT used http://; forcing https:// for TLS compatibility")
+                endpoint = "https://" + endpoint[len("http://"):]
             
             if not token:
                 # Log warning but don't fail init, fail on chat

@@ -44,14 +44,14 @@ def describe_keyframe(image_path: str, retry_count: int = 3) -> str:
     Generate a semantic description of a keyframe using GPT-4o.
     """
     # Prefer Azure/OpenAI for vision tasks as gh_copilot CLI is text-focused
-    provider = os.getenv("LLM_PROVIDER", "azure")
-    if provider == "gh_copilot":
-        provider = "azure"
-        
-    client = get_llm_client(provider)
-    
-    if not client:
-        return "[Mock Description: No suitable LLM client]"
+    preferred_provider = os.getenv("LLM_PROVIDER", "azure").lower()
+    if preferred_provider == "gh_copilot":
+        preferred_provider = "azure"
+
+    provider_chain = [preferred_provider]
+    for fallback in ("openai", "azure"):
+        if fallback not in provider_chain:
+            provider_chain.append(fallback)
 
     try:
         base64_image = encode_image_to_base64(image_path)
@@ -70,28 +70,32 @@ Keep it concise but informative (2-3 sentences).
 Do not include boilerplate fluff phrasing such as 'This video frame showcases' or 'In this scene, we see'. Just provide the description directly.
 """
     
-    for attempt in range(retry_count):
-        try:
-            # Construct message with image
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt_text},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }
+    # Construct message with image once
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt_text},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
             ]
-            
-            response = client.chat(messages, model="gpt-4o", temperature=0.7)
-            return response.strip()
-            
-        except Exception as e:
-            if attempt < retry_count - 1:
-                print(f"API error (attempt {attempt+1}): {e}")
-                time.sleep(2 ** attempt)
-            else:
-                print(f"Failed to describe frame: {e}")
-                return f"[Error: {str(e)}]"
-    
-    return "[Error: Max retries exceeded]"
+        }
+    ]
+
+    last_error = None
+    for provider in provider_chain:
+        client = get_llm_client(provider)
+        if not client:
+            continue
+        for attempt in range(retry_count):
+            try:
+                response = client.chat(messages, model="gpt-4o", temperature=0.7)
+                return response.strip()
+            except Exception as e:
+                last_error = e
+                if attempt < retry_count - 1:
+                    print(f"API error ({provider}, attempt {attempt+1}): {e}")
+                    time.sleep(2 ** attempt)
+                else:
+                    print(f"Failed with provider '{provider}': {e}")
+
+    return f"[Error: {str(last_error) if last_error else 'No suitable LLM provider available'}]"
